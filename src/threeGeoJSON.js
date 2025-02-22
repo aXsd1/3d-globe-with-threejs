@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { LineMaterial } from "jsm/lines/LineMaterial.js";
 import { LineGeometry } from "jsm/lines/LineGeometry.js";
 import { Line2 } from "jsm/lines/Line2.js";
-
+import earcut from 'https://cdn.jsdelivr.net/npm/earcut/+esm';
 /* Draw GeoJSON
 
 Iterates through the latitude and longitude values, converts the values to XYZ coordinates,
@@ -22,11 +22,14 @@ export function drawThreeGeo({ json, radius, materalOptions }) {
   const x_values = [];
   const y_values = [];
   const z_values = [];
-  const json_geom = createGeometryArray(json);
+  const json_geom = createGeometryArray(json).map(item => item.geometry);
+  const json_prob = createGeometryArray(json).map(item => item.properties)
+  console.log(json_geom)
 
   //Re-usable array to hold coordinate values. This is necessary so that you can add
   //interpolated coordinates. Otherwise, lines go through the sphere instead of wrapping around.
   let coordinate_array = [];
+  let properties_array = [];
   for (let geom_num = 0; geom_num < json_geom.length; geom_num++) {
     if (json_geom[geom_num].type == 'Point') {
       convertToSphereCoords(json_geom[geom_num].coordinates, radius);
@@ -40,69 +43,82 @@ export function drawThreeGeo({ json, radius, materalOptions }) {
 
     } else if (json_geom[geom_num].type == 'LineString') {
       coordinate_array = createCoordinateArray(json_geom[geom_num].coordinates);
+      properties_array = json_prob[geom_num].SOVEREIGNT
 
       for (let point_num = 0; point_num < coordinate_array.length; point_num++) {
         convertToSphereCoords(coordinate_array[point_num], radius);
       }
-      drawLine(x_values, y_values, z_values, materalOptions);
+      drawFilledArea(x_values, y_values, z_values, materalOptions, properties_array);
 
     } else if (json_geom[geom_num].type == 'Polygon') {
       for (let segment_num = 0; segment_num < json_geom[geom_num].coordinates.length; segment_num++) {
         coordinate_array = createCoordinateArray(json_geom[geom_num].coordinates[segment_num]);
+        properties_array = json_prob[geom_num].SOVEREIGNT
 
         for (let point_num = 0; point_num < coordinate_array.length; point_num++) {
           convertToSphereCoords(coordinate_array[point_num], radius);
         }
-        drawLine(x_values, y_values, z_values, materalOptions);
+        drawFilledArea(x_values, y_values, z_values, materalOptions, properties_array);
+
       }
 
     } else if (json_geom[geom_num].type == 'MultiLineString') {
       for (let segment_num = 0; segment_num < json_geom[geom_num].coordinates.length; segment_num++) {
         coordinate_array = createCoordinateArray(json_geom[geom_num].coordinates[segment_num]);
+        properties_array = json_prob[geom_num].SOVEREIGNT
 
         for (let point_num = 0; point_num < coordinate_array.length; point_num++) {
           convertToSphereCoords(coordinate_array[point_num], radius);
         }
-        drawLine(x_values, y_values, z_values, materalOptions);
+        drawFilledArea(x_values, y_values, z_values, materalOptions, properties_array);
       }
 
     } else if (json_geom[geom_num].type == 'MultiPolygon') {
       for (let polygon_num = 0; polygon_num < json_geom[geom_num].coordinates.length; polygon_num++) {
         for (let segment_num = 0; segment_num < json_geom[geom_num].coordinates[polygon_num].length; segment_num++) {
           coordinate_array = createCoordinateArray(json_geom[geom_num].coordinates[polygon_num][segment_num]);
+          properties_array = json_prob[geom_num].SOVEREIGNT
 
           for (let point_num = 0; point_num < coordinate_array.length; point_num++) {
             convertToSphereCoords(coordinate_array[point_num], radius);
           }
-          drawLine(x_values, y_values, z_values, materalOptions);
+          drawFilledArea(x_values, y_values, z_values, materalOptions, properties_array);
         }
       }
     } else {
       throw new Error('The geoJSON is not valid.');
     }
   }
-
   function createGeometryArray(json) {
     let geometry_array = [];
-
+  
     if (json.type == 'Feature') {
-      geometry_array.push(json.geometry);
+      geometry_array.push({
+        geometry: json.geometry,
+        properties: json.properties, // Özellikleri ekle
+      });
     } else if (json.type == 'FeatureCollection') {
       for (let feature_num = 0; feature_num < json.features.length; feature_num++) {
-        geometry_array.push(json.features[feature_num].geometry);
+        geometry_array.push({
+          geometry: json.features[feature_num].geometry,
+          properties: json.features[feature_num].properties, // Özellikleri ekle
+        });
       }
     } else if (json.type == 'GeometryCollection') {
       for (let geom_num = 0; geom_num < json.geometries.length; geom_num++) {
-        geometry_array.push(json.geometries[geom_num]);
+        geometry_array.push({
+          geometry: json.geometries[geom_num],
+          properties: null, // GeometryCollection'da özellikler olmayabilir
+        });
       }
     } else {
       throw new Error('The geoJSON is not valid.');
     }
+  
     return geometry_array;
   }
 
   function createCoordinateArray(feature) {
-    //Loop through the coordinates and figure out if the points need interpolation.
     const temp_array = [];
     let interpolation_array = [];
 
@@ -205,7 +221,8 @@ export function drawThreeGeo({ json, radius, materalOptions }) {
     clearArrays();
   }
 
-  function drawLine(x_values, y_values, z_values, options) {
+
+/* function drawLine(x_values, y_values, z_values, options) {
     const lineGeo = new LineGeometry();
     const verts = [];
     for (let i = 0; i < x_values.length; i++) {
@@ -233,12 +250,66 @@ export function drawThreeGeo({ json, radius, materalOptions }) {
 
     clearArrays();
   }
+ */
 
+
+  function drawFilledArea(x_values, y_values, z_values, materialOptions, countryName) {
+    if (x_values.length < 3) {
+      console.warn("Çokgen oluşturmak için en az 3 nokta gerekiyor.");
+      return;
+    }
+  
+    // 1.
+    const lonLatCoords = [];
+    for (let i = 0; i < x_values.length; i++) {
+      const lon = Math.atan2(y_values[i], x_values[i]) * (180 / Math.PI);
+      const hyp = Math.sqrt(x_values[i] ** 2 + y_values[i] ** 2);
+      const lat = Math.atan2(z_values[i], hyp) * (180 / Math.PI);
+      lonLatCoords.push(lon, lat);
+    }
+  
+    // 2.
+    const indices = earcut(lonLatCoords);
+  
+    // 3.
+    const vertices = [];
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i];
+      vertices.push(x_values[idx], y_values[idx], z_values[idx]);
+    }
+
+    let lightness = 0.3 + Math.random() * 0.4; // 0.3 ile 0.7 arasında rastgele bir lightness değeri
+    const color = new THREE.Color().setHSL(0, 0.0, lightness);
+  
+    // 4.
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(vertices, 3)
+    );
+  
+    const material = new THREE.MeshBasicMaterial({
+      color: color,
+      side: THREE.FrontSide,
+      /* side: THREE.DoubleSide, */ // Duble side
+      ...materialOptions,
+    });
+  
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = countryName;
+  
+    // 5. add mesh to scane
+    container.add(mesh);
+  
+    // 6. clear
+    clearArrays();
+  }
+  
   function clearArrays() {
     x_values.length = 0;
     y_values.length = 0;
     z_values.length = 0;
   }
-
+  
   return container;
 }
